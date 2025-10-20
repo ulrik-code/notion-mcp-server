@@ -5,8 +5,21 @@ const { Client } = require('@notionhq/client');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+
+// More permissive CORS configuration
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
+
+// Add request logging
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
 
 const PORT = process.env.PORT || 3000;
 const NOTION_API_KEY = process.env.NOTION_API_KEY;
@@ -18,14 +31,29 @@ if (!NOTION_API_KEY) {
 
 const notion = new Client({ auth: NOTION_API_KEY });
 
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'notion-mcp-server',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      tools: '/mcp/tools',
+      execute: '/mcp/execute (POST)'
+    }
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'notion-mcp-server' });
+  res.json({ status: 'ok', service: 'notion-mcp-server', timestamp: new Date().toISOString() });
 });
 
 // MCP tools list endpoint
 app.get('/mcp/tools', async (req, res) => {
   try {
+    console.log('Tools list requested');
     res.json({
       tools: [
         {
@@ -79,6 +107,7 @@ app.get('/mcp/tools', async (req, res) => {
       ]
     });
   } catch (error) {
+    console.error('Error in /mcp/tools:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -86,6 +115,8 @@ app.get('/mcp/tools', async (req, res) => {
 // MCP tool execution endpoint
 app.post('/mcp/execute', async (req, res) => {
   const { tool, arguments: args } = req.body;
+
+  console.log(`Executing tool: ${tool}`, args);
 
   try {
     let result;
@@ -138,11 +169,12 @@ app.post('/mcp/execute', async (req, res) => {
     res.json({ result });
   } catch (error) {
     console.error('Tool execution error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, stack: error.stack });
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Notion MCP Server running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`Notion API Key configured: ${NOTION_API_KEY ? 'Yes' : 'No'}`);
 });
