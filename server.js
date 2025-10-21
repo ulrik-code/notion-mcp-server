@@ -3,6 +3,7 @@ const cors = require('cors');
 const { Client } = require('@notionhq/client');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
+const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 require('dotenv').config();
 
@@ -47,7 +48,7 @@ const mcpServer = new Server(
 );
 
 // Define Notion tools
-mcpServer.setRequestHandler('tools/list', async () => {
+mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
@@ -157,7 +158,7 @@ mcpServer.setRequestHandler('tools/list', async () => {
 });
 
 // Handle tool execution
-mcpServer.setRequestHandler('tools/call', async (request) => {
+mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   console.log(`Executing tool: ${name}`, args);
