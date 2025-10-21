@@ -3,6 +3,7 @@ const cors = require('cors');
 const { Client } = require('@notionhq/client');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
+const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 require('dotenv').config();
@@ -34,21 +35,8 @@ if (!NOTION_API_KEY) {
 
 const notion = new Client({ auth: NOTION_API_KEY });
 
-// Create MCP Server
-const mcpServer = new Server(
-  {
-    name: 'notion-mcp-server',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
-
-// Define Notion tools
-mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
+// Tool handlers
+const listToolsHandler = async () => {
   return {
     tools: [
       {
@@ -155,10 +143,9 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
       }
     ]
   };
-});
+};
 
-// Handle tool execution
-mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+const callToolHandler = async (request) => {
   const { name, arguments: args } = request.params;
 
   console.log(`Executing tool: ${name}`, args);
@@ -248,7 +235,28 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       isError: true
     };
   }
-});
+};
+
+// Create MCP Server factory
+function createMCPServer() {
+  const server = new Server(
+    {
+      name: 'notion-mcp-server',
+      version: '1.0.0',
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+
+  // Define Notion tools
+  server.setRequestHandler(ListToolsRequestSchema, listToolsHandler);
+  server.setRequestHandler(CallToolRequestSchema, callToolHandler);
+
+  return server;
+}
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -256,10 +264,12 @@ app.get('/', (req, res) => {
     status: 'ok', 
     service: 'notion-mcp-server',
     version: '1.0.0',
-    protocol: 'MCP over SSE',
+    protocol: 'MCP',
+    transports: ['SSE', 'HTTP'],
     endpoints: {
       health: '/health',
       sse: '/sse',
+      mcp: '/mcp (POST)',
       message: '/message (POST)'
     }
   });
@@ -275,26 +285,87 @@ app.get('/health', (req, res) => {
   });
 });
 
-// SSE endpoint for MCP
+// SSE endpoint for MCP (for SSE-based clients)
 app.get('/sse', async (req, res) => {
   console.log('SSE connection established');
   
+  const mcpServer = createMCPServer();
   const transport = new SSEServerTransport('/message', res);
   await mcpServer.connect(transport);
   
   console.log('MCP server connected via SSE');
 });
 
-// Message endpoint for MCP
+// Message endpoint for SSE transport
 app.post('/message', async (req, res) => {
-  console.log('Received message:', req.body);
-  // The SSE transport will handle this
+  console.log('Received SSE message:', req.body);
   res.status(200).end();
+});
+
+// Direct MCP HTTP endpoint (for HTTP-based clients like n8n)
+app.post('/mcp', async (req, res) => {
+  console.log('Received MCP request:', JSON.stringify(req.body, null, 2));
+  
+  try {
+    const request = req.body;
+    
+    // Handle different MCP methods
+    if (request.method === 'initialize') {
+      res.json({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: {
+          protocolVersion: '2024-11-05',
+          capabilities: {
+            tools: {}
+          },
+          serverInfo: {
+            name: 'notion-mcp-server',
+            version: '1.0.0'
+          }
+        }
+      });
+    } else if (request.method === 'tools/list') {
+      const result = await listToolsHandler();
+      res.json({
+        jsonrpc: '2.0',
+        id: request.id,
+        result
+      });
+    } else if (request.method === 'tools/call') {
+      const result = await callToolHandler(request);
+      res.json({
+        jsonrpc: '2.0',
+        id: request.id,
+        result
+      });
+    } else {
+      res.status(400).json({
+        jsonrpc: '2.0',
+        id: request.id,
+        error: {
+          code: -32601,
+          message: `Method not found: ${request.method}`
+        }
+      });
+    }
+  } catch (error) {
+    console.error('MCP request error:', error);
+    res.status(500).json({
+      jsonrpc: '2.0',
+      id: req.body.id,
+      error: {
+        code: -32603,
+        message: error.message
+      }
+    });
+  }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Notion MCP Server running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+  console.log(`HTTP MCP endpoint: http://localhost:${PORT}/mcp`);
   console.log(`Notion API Key configured: ${NOTION_API_KEY ? 'Yes' : 'No'}`);
 });
