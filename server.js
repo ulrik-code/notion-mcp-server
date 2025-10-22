@@ -293,12 +293,7 @@ app.get('/health', (req, res) => {
 app.get('/sse', async (req, res) => {
   console.log('SSE connection established');
   
-  // Set SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-
+  // DON'T set headers manually - let the SSE transport handle it
   const mcpServer = createMCPServer();
   const transport = new SSEServerTransport('/message', res);
   
@@ -306,9 +301,16 @@ app.get('/sse', async (req, res) => {
   const connectionId = Date.now().toString();
   sseConnections.set(connectionId, { transport, server: mcpServer });
   
-  await mcpServer.connect(transport);
-  
-  console.log(`MCP server connected via SSE (ID: ${connectionId})`);
+  try {
+    await mcpServer.connect(transport);
+    console.log(`MCP server connected via SSE (ID: ${connectionId})`);
+  } catch (error) {
+    console.error('SSE connection error:', error);
+    sseConnections.delete(connectionId);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
+  }
 
   // Handle client disconnect
   req.on('close', () => {
