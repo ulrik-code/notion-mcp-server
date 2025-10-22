@@ -3,7 +3,6 @@ const cors = require('cors');
 const { Client } = require('@notionhq/client');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
-const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { ListToolsRequestSchema, CallToolRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 require('dotenv').config();
@@ -258,6 +257,9 @@ function createMCPServer() {
   return server;
 }
 
+// Store active SSE connections
+const sseConnections = new Map();
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({ 
@@ -265,6 +267,7 @@ app.get('/', (req, res) => {
     service: 'notion-mcp-server',
     version: '1.0.0',
     protocol: 'MCP',
+    protocolVersion: '2025-03-26',
     transports: ['SSE', 'HTTP'],
     endpoints: {
       health: '/health',
@@ -281,6 +284,7 @@ app.get('/health', (req, res) => {
     status: 'ok', 
     service: 'notion-mcp-server',
     protocol: 'MCP',
+    protocolVersion: '2025-03-26',
     timestamp: new Date().toISOString() 
   });
 });
@@ -289,17 +293,37 @@ app.get('/health', (req, res) => {
 app.get('/sse', async (req, res) => {
   console.log('SSE connection established');
   
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
   const mcpServer = createMCPServer();
   const transport = new SSEServerTransport('/message', res);
+  
+  // Store connection
+  const connectionId = Date.now().toString();
+  sseConnections.set(connectionId, { transport, server: mcpServer });
+  
   await mcpServer.connect(transport);
   
-  console.log('MCP server connected via SSE');
+  console.log(`MCP server connected via SSE (ID: ${connectionId})`);
+
+  // Handle client disconnect
+  req.on('close', () => {
+    console.log(`SSE connection closed (ID: ${connectionId})`);
+    sseConnections.delete(connectionId);
+  });
 });
 
 // Message endpoint for SSE transport
 app.post('/message', async (req, res) => {
-  console.log('Received SSE message:', req.body);
-  res.status(200).end();
+  console.log('Received SSE message:', JSON.stringify(req.body));
+  
+  // The SSE transport handles the actual message processing
+  // This endpoint just needs to acknowledge receipt
+  res.status(202).json({ received: true });
 });
 
 // Direct MCP HTTP endpoint (for HTTP-based clients like n8n)
@@ -315,7 +339,7 @@ app.post('/mcp', async (req, res) => {
         jsonrpc: '2.0',
         id: request.id,
         result: {
-          protocolVersion: '2024-11-05',
+          protocolVersion: '2025-03-26',
           capabilities: {
             tools: {}
           },
@@ -325,6 +349,9 @@ app.post('/mcp', async (req, res) => {
           }
         }
       });
+    } else if (request.method === 'notifications/initialized') {
+      // Acknowledge initialized notification
+      res.status(200).json({ received: true });
     } else if (request.method === 'tools/list') {
       const result = await listToolsHandler();
       res.json({
@@ -364,6 +391,7 @@ app.post('/mcp', async (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Notion MCP Server running on port ${PORT}`);
+  console.log(`Protocol Version: 2025-03-26`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
   console.log(`HTTP MCP endpoint: http://localhost:${PORT}/mcp`);
