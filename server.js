@@ -257,7 +257,7 @@ function createMCPServer() {
   return server;
 }
 
-// Store active SSE connections
+// Store active SSE connections - now needs to store the response object too
 const sseConnections = new Map();
 
 // Root endpoint
@@ -293,13 +293,16 @@ app.get('/health', (req, res) => {
 app.get('/sse', async (req, res) => {
   console.log('SSE connection established');
   
-  // DON'T set headers manually - let the SSE transport handle it
+  const connectionId = Date.now().toString();
   const mcpServer = createMCPServer();
   const transport = new SSEServerTransport('/message', res);
   
-  // Store connection
-  const connectionId = Date.now().toString();
-  sseConnections.set(connectionId, { transport, server: mcpServer });
+  // Store connection with server and response
+  sseConnections.set(connectionId, { 
+    transport, 
+    server: mcpServer,
+    res: res
+  });
   
   try {
     await mcpServer.connect(transport);
@@ -319,13 +322,93 @@ app.get('/sse', async (req, res) => {
   });
 });
 
-// Message endpoint for SSE transport
+// Message endpoint for SSE transport - FIXED to actually handle messages
 app.post('/message', async (req, res) => {
   console.log('Received SSE message:', JSON.stringify(req.body));
   
-  // The SSE transport handles the actual message processing
-  // This endpoint just needs to acknowledge receipt
-  res.status(202).json({ received: true });
+  try {
+    // Find an active SSE connection to handle this message
+    // In a production system, you'd want to track which connection this message is for
+    const connections = Array.from(sseConnections.values());
+    
+    if (connections.length === 0) {
+      console.error('No active SSE connections to handle message');
+      return res.status(503).json({ 
+        error: 'No active SSE connection',
+        message: 'Please establish an SSE connection first by calling GET /sse'
+      });
+    }
+    
+    // Use the most recent connection (last one in the map)
+    const connection = connections[connections.length - 1];
+    
+    // The SSE transport should handle the message
+    // We need to manually trigger the server's request handling
+    const { server } = connection;
+    const request = req.body;
+    
+    // Handle MCP request directly through the server
+    if (request.method === 'tools/list') {
+      const result = await listToolsHandler();
+      const response = {
+        jsonrpc: '2.0',
+        id: request.id,
+        result
+      };
+      console.log('Sending tools/list response:', JSON.stringify(response));
+      res.json(response);
+    } else if (request.method === 'tools/call') {
+      const result = await callToolHandler(request);
+      const response = {
+        jsonrpc: '2.0',
+        id: request.id,
+        result
+      };
+      console.log('Sending tools/call response:', JSON.stringify(response));
+      res.json(response);
+    } else if (request.method === 'initialize') {
+      const response = {
+        jsonrpc: '2.0',
+        id: request.id,
+        result: {
+          protocolVersion: '2025-03-26',
+          capabilities: {
+            tools: {}
+          },
+          serverInfo: {
+            name: 'notion-mcp-server',
+            version: '1.0.0'
+          }
+        }
+      };
+      console.log('Sending initialize response:', JSON.stringify(response));
+      res.json(response);
+    } else if (request.method === 'notifications/initialized') {
+      // Acknowledge initialized notification
+      console.log('Received initialized notification');
+      res.status(200).json({ received: true });
+    } else {
+      console.log(`Unknown method: ${request.method}`);
+      res.status(400).json({
+        jsonrpc: '2.0',
+        id: request.id,
+        error: {
+          code: -32601,
+          message: `Method not found: ${request.method}`
+        }
+      });
+    }
+  } catch (error) {
+    console.error('Message handling error:', error);
+    res.status(500).json({
+      jsonrpc: '2.0',
+      id: req.body?.id,
+      error: {
+        code: -32603,
+        message: error.message
+      }
+    });
+  }
 });
 
 // Direct MCP HTTP endpoint (for HTTP-based clients like n8n)
